@@ -28,8 +28,11 @@ local function load_env(path)
 end
 
 local env = load_env(".env")
-local SSID     = env.SSID or ""
-local PASSWORD = env.PASSWORD or ""
+local SSID         = env.SSID or ""
+local PASSWORD     = env.PASSWORD or ""
+local SUPABASE_URL = env.SUPABASE_URL or ""
+local SUPABASE_KEY = env.SUPABASE_KEY or ""
+local BRIDGE_URL = env.BRIDGE_URL or ""
 local LED_PIN  = 1  -- GPIO5 = D1
 local LED_PIN2 = 2  -- GPIO4 = D2
 
@@ -61,18 +64,33 @@ gpio.write(LED_PIN, gpio.LOW)
 
 -- Conectar WiFi
 wifi.setmode(wifi.STATION)
-wifi.sta.config(SSID, PASSWORD)
+wifi.sta.config({ssid = SSID, pwd = PASSWORD})
 wifi.sta.connect()
 
 -- Chequear conexión cada 2 segundos
-tmr.alarm(1, 2000, 1, function()
+local wifi_timer = tmr.create()
+wifi_timer:alarm(2000, tmr.ALARM_AUTO, function()
     local status = wifi.sta.status()
     if status == 5 then
         gpio.write(LED_PIN, gpio.HIGH)
         gpio.write(LED_PIN2, gpio.LOW)
-        print("Conectado! IP: " .. wifi.sta.getip())
-        tmr.stop(1)  -- para el chequeo
+        local ip = wifi.sta.getip()
+        print("Conectado! IP: " .. ip)
+        wifi_timer:unregister()  -- para el chequeo
+
+        -- Registrar conexión enviando MAC e IP al bridge HTTP local
+        local mac = wifi.sta.getmac()
+        local body = '{"mac_address":"' .. mac .. '","ip_address":"' .. ip .. '"}'
+        http.post(BRIDGE_URL .. "/connection", "Content-Type: application/json", body, function(code, data)
+            if code == 201 then
+                print("Conexion registrada en BD")
+            elseif code == 404 then
+                print("Modulo no registrado en BD, se omite el insert")
+            else
+                print("Error al registrar conexion: " .. tostring(code))
+            end
+        end)
     else
-        print("Esperando... status: " .. status .. " (" .. wifi_status_text(status) .. ")")
+        print("Esperando... status: " .. tostring(status))
     end
 end)
