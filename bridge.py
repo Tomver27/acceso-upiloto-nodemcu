@@ -63,6 +63,35 @@ def register_connection():
     return jsonify({"error": f"Error insertando en Connections: {resp.status_code}", "detail": resp.text}), 502
 
 
+@app.post("/access")
+def check_access():
+    data = request.get_json(silent=True, force=True)
+    if not data or "uid" not in data:
+        return jsonify({"error": "Se requiere uid"}), 400
+
+    uid = data["uid"].upper()
+    print(f"[DEBUG] UID recibido: {uid!r}")
+
+    resp = requests.get(
+        f"{SUPABASE_URL}/rest/v1/Cards",
+        headers=SUPABASE_HEADERS,
+        params={"uid": f"ilike.{uid}", "select": "id,uid,allowed"},
+        timeout=10,
+    )
+
+    if resp.status_code != 200:
+        return jsonify({"error": f"Error consultando Cards: {resp.status_code}", "detail": resp.text}), 502
+
+    cards = resp.json()
+    if not cards:
+        return jsonify({"error": "Tarjeta no registrada"}), 404
+
+    if not cards[0].get("allowed", False):
+        return jsonify({"error": "Acceso denegado"}), 403
+
+    return jsonify({"ok": True, "uid": uid}), 200
+
+
 if __name__ == "__main__":
     print(f"Bridge escuchando en http://0.0.0.0:{BRIDGE_PORT}/connection")
     app.run(host="0.0.0.0", port=BRIDGE_PORT)

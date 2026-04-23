@@ -36,6 +36,8 @@ local BRIDGE_URL = env.BRIDGE_URL or ""
 local LED_PIN  = 1  -- GPIO5 = D1
 local LED_PIN2 = 2  -- GPIO4 = D2
 
+print(i2c)
+
 local function wifi_status_text(code)
     if code == 0 then return "IDLE" end
     if code == 1 then return "CONNECTING" end
@@ -81,6 +83,7 @@ wifi_timer:alarm(2000, tmr.ALARM_AUTO, function()
         -- Registrar conexión enviando MAC e IP al bridge HTTP local
         local mac = wifi.sta.getmac()
         local body = '{"mac_address":"' .. mac .. '","ip_address":"' .. ip .. '"}'
+        print("Esta es la ip del bridge: " .. BRIDGE_URL)
         http.post(BRIDGE_URL .. "/connection", "Content-Type: application/json", body, function(code, data)
             if code == 201 then
                 print("Conexion registrada en BD")
@@ -88,6 +91,32 @@ wifi_timer:alarm(2000, tmr.ALARM_AUTO, function()
                 print("Modulo no registrado en BD, se omite el insert")
             else
                 print("Error al registrar conexion: " .. tostring(code))
+            end
+        end)
+
+        -- Iniciar lectura NFC una vez conectado
+        local nfc = require("pn532")
+        nfc.begin()
+
+        local nfc_timer = tmr.create()
+        nfc_timer:alarm(1000, tmr.ALARM_AUTO, function()
+            local uid = nfc.read_uid()
+            if uid then
+                print("Tag detectado: " .. uid)
+                local nfc_body = '{"uid":"' .. uid .. '"}'
+                http.post(BRIDGE_URL .. "/access", "Content-Type: application/json", nfc_body, function(c, d)
+                    if c == 200 then
+                        print("Acceso permitido")
+                        gpio.write(LED_PIN, gpio.LOW)
+                        tmr.create():alarm(500, tmr.ALARM_SINGLE, function()
+                            gpio.write(LED_PIN, gpio.HIGH)
+                        end)
+                    elseif c == 403 then
+                        print("Acceso denegado")
+                    else
+                        print("Error al verificar acceso: " .. tostring(c))
+                    end
+                end)
             end
         end)
     else
