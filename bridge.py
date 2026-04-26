@@ -1,6 +1,7 @@
 import os
 import requests
 from flask import Flask, request, jsonify
+from datetime import datetime  # por si necesitas start_date manual
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -17,6 +18,15 @@ SUPABASE_HEADERS = {
     "Content-Type": "application/json",
 }
 
+SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", SUPABASE_KEY)
+SUPABASE_SERVICE_HEADERS = {
+    "apikey": SUPABASE_SERVICE_KEY,
+    "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+    "Content-Type": "application/json",
+}
+
+# Variable global para guardar el lab del módulo activo
+current_module = {"id": None, "id_lab": None}
 
 @app.post("/connection")
 def register_connection():
@@ -27,69 +37,69 @@ def register_connection():
     mac_address = data["mac_address"]
     ip_address  = data["ip_address"]
 
-    print(f"[DEBUG] MAC recibida: {mac_address!r}")
-
-    # Buscar el modulo por MAC en Supabase
     resp = requests.get(
         f"{SUPABASE_URL}/rest/v1/Modules",
         headers=SUPABASE_HEADERS,
-        params={"mac_address": f"ilike.{mac_address}", "select": "id,mac_address"},
+        params={"mac_address": f"ilike.{mac_address}", "select": "id,mac_address,id_lab"},  # <-- agregar id_lab
         timeout=10,
     )
 
-    print(f"[DEBUG] Supabase status: {resp.status_code}")
-    print(f"[DEBUG] Supabase respuesta: {resp.text!r}")
-
     if resp.status_code != 200:
-        return jsonify({"error": f"Error consultando Modules: {resp.status_code}", "detail": resp.text}), 502
+        return jsonify({"error": f"Error consultando Modules: {resp.status_code}"}), 502
 
     modules = resp.json()
     if not modules:
         return jsonify({"error": "Modulo no registrado en BD"}), 404
 
-    id_module = modules[0]["id"]
+    # Guardar globalmente para usarlo en /access
+    current_module["id"]     = modules[0]["id"]
+    current_module["id_lab"] = modules[0].get("id_lab")
 
-    # Insertar en Connections
     resp = requests.post(
         f"{SUPABASE_URL}/rest/v1/Connections",
         headers={**SUPABASE_HEADERS, "Prefer": "return=minimal"},
-        json={"ip_address": ip_address, "id_module": id_module},
+        json={"ip_address": ip_address, "id_module": current_module["id"]},
         timeout=10,
     )
 
     if resp.status_code == 201:
-        return jsonify({"ok": True, "id_module": id_module}), 201
+        print(f"[DEBUG] Módulo {current_module['id']} conectado, lab={current_module['id_lab']}")
+        return jsonify({"ok": True}), 201
 
-    return jsonify({"error": f"Error insertando en Connections: {resp.status_code}", "detail": resp.text}), 502
+    return jsonify({"error": f"Error en Connections: {resp.status_code}"}), 502
 
 
 @app.post("/access")
-def check_access():
+def register_entry():
     data = request.get_json(silent=True, force=True)
     if not data or "uid" not in data:
         return jsonify({"error": "Se requiere uid"}), 400
 
-    uid = data["uid"].upper()
-    print(f"[DEBUG] UID recibido: {uid!r}")
+    card_uuid = data["uid"].upper()
+    id_lab    = current_module.get("id_lab")
 
-    resp = requests.get(
-        f"{SUPABASE_URL}/rest/v1/Cards",
-        headers=SUPABASE_HEADERS,
-        params={"uid": f"ilike.{uid}", "select": "id,uid,allowed"},
+    print(f"[DEBUG] UID recibido: {card_uuid!r}, id_lab={id_lab}")
+
+    payload = {"card_uuid": card_uuid, "granted": True}
+    if id_lab:
+        payload["id_lab"] = id_lab
+
+    print(f"[DEBUG] Payload a Entries: {payload}")
+
+    resp = requests.post(
+        f"{SUPABASE_URL}/rest/v1/Entries",
+        headers={**SUPABASE_SERVICE_HEADERS, "Prefer": "return=representation"},
+        json=payload,
         timeout=10,
     )
 
-    if resp.status_code != 200:
-        return jsonify({"error": f"Error consultando Cards: {resp.status_code}", "detail": resp.text}), 502
+    print(f"[DEBUG] Supabase Entries status: {resp.status_code}")
+    print(f"[DEBUG] Supabase Entries respuesta: {resp.text!r}")
 
-    cards = resp.json()
-    if not cards:
-        return jsonify({"error": "Tarjeta no registrada"}), 404
+    if resp.status_code in (200, 201):
+        return jsonify({"ok": True, "card_uuid": card_uuid}), 201
 
-    if not cards[0].get("allowed", False):
-        return jsonify({"error": "Acceso denegado"}), 403
-
-    return jsonify({"ok": True, "uid": uid}), 200
+    return jsonify({"error": f"Error en Entries: {resp.status_code}", "detail": resp.text}), 502
 
 
 if __name__ == "__main__":
